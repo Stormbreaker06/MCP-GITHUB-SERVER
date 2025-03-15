@@ -3,6 +3,8 @@ from rest_framework.response import Response
 from rest_framework import status
 from .contexts import GitHubContext
 from .serializers import GitHubRepositorySerializer
+from django.shortcuts import render
+
 
 
 class GitHubRepositoryView(APIView):
