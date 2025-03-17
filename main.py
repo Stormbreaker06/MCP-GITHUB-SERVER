@@ -1,41 +1,65 @@
 import asyncio
-import json
 import os
-from mcp.server import Server
+import logging
+import sys
+
+# Add current directory to path to ensure modules are found
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 from github_client import GitHubClient
+from mcp_server import GitHubMCPServer
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("main")
 
-from config import GITHUB_API_TOKEN
-github_client = GitHubClient(api_token=GITHUB_API_TOKEN)
-# Initialize GitHub client with your API token
-github_client = GitHubClient(api_token=os.environ.get("GITHUB_API_TOKEN"))
+# Try to import from config file, fall back to environment variables
+try:
+    from config import GITHUB_API_TOKEN, HOST, PORT
+except ImportError:
+    logger.info("Config file not found, using environment variables")
+    GITHUB_API_TOKEN = os.environ.get("GITHUB_API_TOKEN")
+    HOST = os.environ.get("HOST", "localhost")
+    PORT = int(os.environ.get("PORT", "8080"))
 
-# Set up MCP server handlers
-async def handle_search_repos(params):
-    query = params.get("query", "")
-    limit = int(params.get("limit", 5))
-    results = await github_client.search_repositories(query, limit)
-    return {"repositories": results}
-
-async def handle_view_issues(params):
-    owner = params.get("owner")
-    repo = params.get("repo")
-    state = params.get("state", "open")
-    issues = await github_client.get_issues(owner, repo, state)
-    return {"issues": issues}
-
-# Main entry point
 async def main():
-    # Create MCP server
-    server = Server()
+    # Check if API token is set
+    if not GITHUB_API_TOKEN:
+        logger.error("GitHub API token not found. Please set the GITHUB_API_TOKEN environment variable or update config.py.")
+        return
     
-    # Register handlers
-    server.register_handler("search_repositories", handle_search_repos)
-    server.register_handler("view_issues", handle_view_issues)
+    try:
+        # Initialize the GitHub client
+        logger.info("Initializing GitHub client")
+        github_client = GitHubClient(api_token=GITHUB_API_TOKEN)
+        
+        # Initialize and start the MCP server
+        logger.info("Starting GitHub MCP server")
+        server = GitHubMCPServer(github_client)
+        
+        # Handle graceful shutdown
+        try:
+            await server.start(host=HOST, port=PORT)
+            logger.info(f"GitHub MCP server running at http://{HOST}:{PORT}")
+            
+            # Keep the server running
+            while True:
+                await asyncio.sleep(1)
+                
+        except KeyboardInterrupt:
+            logger.info("Shutting down server...")
+            await server.stop()
     
-    # Start the server
-    print("Starting MCP GitHub server...")
-    await server.start()
+    except Exception as e:
+        logger.error(f"Error starting server: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Server stopped.")
