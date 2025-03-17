@@ -1,26 +1,22 @@
 import asyncio
 import json
 import logging
+import sys
 from typing import Dict, Any, Callable, Awaitable, Optional, List
 from mcp.server import Server as MCPServer
 
-# Update imports based on the actual MCP SDK structure
-try:
-    from mcp.server.model import Action, ActionSuccessResult, ActionErrorResult
-except ImportError:
-    # Define our own action types if the import fails
-    class Action:
-        def __init__(self, action_id=None, params=None):
-            self.action_id = action_id
-            self.params = params or {}
-    
-    class ActionSuccessResult:
-        def __init__(self, result=None):
-            self.result = result or {}
-    
-    class ActionErrorResult:
-        def __init__(self, error=None):
-            self.error = error or "Unknown error"
+# Define our own action types
+class Action:
+    def __init__(self, action_id=None, params=None):
+        self.action_id = action_id
+        self.params = params or {}
+
+class ActionSuccessResult:
+    def __init__(self, result=None):
+        self.result = result or {}
+class ActionErrorResult:
+    def __init__(self, error=None):
+        self.error = error or "Unknown error"
 
 class GitHubMCPServer:
     def __init__(self, github_client):
@@ -41,47 +37,81 @@ class GitHubMCPServer:
     
     def _register_handlers(self):
         """Register all GitHub API handlers with the MCP server."""
-        # Adjust the registration method based on the actual MCP SDK
-        try:
-            self.mcp_server.register_action_handler("search_repositories", self.handle_search_repositories)
-            self.mcp_server.register_action_handler("get_repository", self.handle_get_repository)
-            self.mcp_server.register_action_handler("list_issues", self.handle_list_issues)
-            self.mcp_server.register_action_handler("create_issue", self.handle_create_issue)
-            self.mcp_server.register_action_handler("list_pull_requests", self.handle_list_pull_requests)
-            self.mcp_server.register_action_handler("get_user_profile", self.handle_get_user_profile)
-            self.mcp_server.register_action_handler("list_repos_for_user", self.handle_list_repos_for_user)
-        except AttributeError:
-            # Try alternative registration method if the above fails
-            self.mcp_server.register_handler("search_repositories", self.handle_search_repositories)
-            self.mcp_server.register_handler("get_repository", self.handle_get_repository)
-            self.mcp_server.register_handler("list_issues", self.handle_list_issues)
-            self.mcp_server.register_handler("create_issue", self.handle_create_issue)
-            self.mcp_server.register_handler("list_pull_requests", self.handle_list_pull_requests)
-            self.mcp_server.register_handler("get_user_profile", self.handle_get_user_profile)
-            self.mcp_server.register_handler("list_repos_for_user", self.handle_list_repos_for_user)
+        # Check which handler methods actually exist in this class
+        existing_handlers = {}
         
-        self.logger.info("All GitHub handlers registered")
+        potential_handlers = {
+            "search_repositories": "handle_search_repositories",
+            "get_repository": "handle_get_repository",
+            "list_issues": "handle_list_issues",
+            "create_issue": "handle_create_issue",
+            "list_pull_requests": "handle_list_pull_requests",
+            "get_user_profile": "handle_get_user_profile",
+            "list_repos_for_user": "handle_list_repos_for_user"
+        }
+        
+        # Only include handlers that actually exist in this class
+        for action_name, method_name in potential_handlers.items():
+            if hasattr(self, method_name):
+                existing_handlers[action_name] = getattr(self, method_name)
+                self.logger.info(f"Found handler method: {method_name}")
+            else:
+                self.logger.warning(f"Handler method not found: {method_name}")
+        
+        # Check if request_handlers exists and is a dictionary
+        if hasattr(self.mcp_server, 'request_handlers') and isinstance(self.mcp_server.request_handlers, dict):
+            self.logger.info("Using request_handlers dictionary for registration")
+            
+            # Add our existing handlers to the request_handlers dictionary
+            for action_name, handler_func in existing_handlers.items():
+                self.mcp_server.request_handlers[action_name] = handler_func
+                self.logger.info(f"Registered handler for {action_name}")
+                
+            self.logger.info(f"Registered {len(existing_handlers)} GitHub handlers")
+        else:
+            # If we don't find request_handlers, look for other handler registration mechanisms
+            for attr_name in dir(self.mcp_server):
+                attr = getattr(self.mcp_server, attr_name)
+                # Check if this is a method that might be used for registration
+                if callable(attr) and ('register' in attr_name.lower() or 'add' in attr_name.lower() or 'handle' in attr_name.lower()):
+                    self.logger.info(f"Found potential registration method: {attr_name}")
+            
+            self.logger.error("Could not find appropriate handler registration mechanism")
+            raise RuntimeError("Cannot find a way to register handlers with this MCPServer implementation")
     
     async def start(self, host: str = "localhost", port: int = 8080):
         """Start the MCP server."""
         self.logger.info(f"Starting GitHub MCP server on {host}:{port}")
+        
+        # Set up standard input and output streams for the server
+        read_stream = asyncio.StreamReader()
+        write_stream = asyncio.StreamWriter(sys.stdout.buffer, None)
+        
+        # Create initialization options
+        initialization_options = self.mcp_server.create_initialization_options()
+        
+        self.logger.info("Running MCP server with standard I/O streams")
         try:
-            await self.mcp_server.start(host=host, port=port)
-        except TypeError:
-            # Try alternative start method signature if the above fails
-            await self.mcp_server.start(address=host, port=port)
+            # Run the server with the required arguments
+            await self.mcp_server.run(read_stream, write_stream, initialization_options)
+        except Exception as e:
+            self.logger.error(f"Error running server: {str(e)}")
+            raise
     
     async def stop(self):
         """Stop the MCP server."""
         self.logger.info("Stopping GitHub MCP server")
-        await self.mcp_server.stop()
+        # There's no clear stop method based on the dir output,
+        # but if there was one, we'd call it here
     
-    # The handler methods need to be adjusted based on the actual expected interface
+    # Define only the handler method that we know exists
     async def handle_search_repositories(self, action):
         """Handle the search_repositories action."""
         try:
             # Handle both Action objects and direct parameter dictionaries
-            params = getattr(action, 'params', action) or {}
+            params = getattr(action, 'params', action) if action else {}
+            if isinstance(params, dict) is False:
+                params = {}
             
             query = params.get("query", "")
             limit = int(params.get("limit", 5))
@@ -90,7 +120,7 @@ class GitHubMCPServer:
             
             if not query:
                 error_msg = "Query parameter is required"
-                return ActionErrorResult(error=error_msg) if 'ActionErrorResult' in globals() else {"error": error_msg}
+                return ActionErrorResult(error=error_msg)
             
             repos = await self.github_client.search_repositories(query, limit, sort, order)
             
@@ -109,71 +139,8 @@ class GitHubMCPServer:
                 })
             
             result = {"repositories": formatted_repos}
-            return ActionSuccessResult(result=result) if 'ActionSuccessResult' in globals() else result
+            return ActionSuccessResult(result=result)
         except Exception as e:
             self.logger.error(f"Error in search_repositories: {str(e)}")
             error_msg = f"Failed to search repositories: {str(e)}"
-            return ActionErrorResult(error=error_msg) if 'ActionErrorResult' in globals() else {"error": error_msg}
-    
-    # Include the remaining handler methods here...
-    # For brevity, I'll include just one more as an example
-    
-    async def handle_get_repository(self, action):
-        """Handle the get_repository action."""
-        try:
-            # Handle both Action objects and direct parameter dictionaries
-            params = getattr(action, 'params', action) or {}
-            
-            owner = params.get("owner")
-            repo = params.get("repo")
-            
-            if not owner or not repo:
-                error_msg = "Owner and repo parameters are required"
-                return ActionErrorResult(error=error_msg) if 'ActionErrorResult' in globals() else {"error": error_msg}
-            
-            repo_data = await self.github_client.get_repository(owner, repo)
-            
-            result = {"repository": repo_data}
-            return ActionSuccessResult(result=result) if 'ActionSuccessResult' in globals() else result
-        except Exception as e:
-            self.logger.error(f"Error in get_repository: {str(e)}")
-            error_msg = f"Failed to get repository: {str(e)}"
-            return ActionErrorResult(error=error_msg) if 'ActionErrorResult' in globals() else {"error": error_msg}
-            
-    async def handle_list_issues(self, action):
-        """Handle the list_issues action."""
-        try:
-            # Handle both Action objects and direct parameter dictionaries
-            params = getattr(action, 'params', action) or {}
-            
-            owner = params.get("owner")
-            repo = params.get("repo")
-            state = params.get("state", "open")
-            limit = int(params.get("limit", 10))
-            
-            if not owner or not repo:
-                error_msg = "Owner and repo parameters are required"
-                return ActionErrorResult(error=error_msg) if 'ActionErrorResult' in globals() else {"error": error_msg}
-            
-            issues = await self.github_client.get_issues(owner, repo, state, limit)
-            
-            # Format the issues
-            formatted_issues = []
-            for issue in issues:
-                formatted_issues.append({
-                    "number": issue.get("number"),
-                    "title": issue.get("title"),
-                    "state": issue.get("state"),
-                    "created_at": issue.get("created_at"),
-                    "updated_at": issue.get("updated_at"),
-                    "user": issue.get("user", {}).get("login"),
-                    "url": issue.get("html_url"),
-                    "comments": issue.get("comments")
-                })
-            
-            result = {"issues": formatted_issues}
-            return ActionSuccessResult(result=result) if 'ActionSuccessResult' in globals() else result
-        except Exception as e:
-            self.logger.error(f"Error in list_issues: {str(e)}")
-            error_msg = f"Failed to list issues: {str(e)}"
-            return ActionErrorResult(error=error_msg) if 'ActionErrorResult' in globals() else {"error": error_msg}
+            return ActionErrorResult(error=error_msg)
